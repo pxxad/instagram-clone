@@ -52,3 +52,4 @@ export function csrfOriginCheck(req, res, next) {
   }
   next();
 }
+

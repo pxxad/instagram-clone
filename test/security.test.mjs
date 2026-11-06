@@ -150,3 +150,4 @@ test("csrfOriginCheck blocks state-changing requests with foreign Referer with 4
   assert.equal(statusSet, 403);
   assert.match(responseSent, /This request came from another website/);
 });
+

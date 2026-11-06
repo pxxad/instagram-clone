@@ -33,6 +33,7 @@ import {
   sortTray,
 } from "./lib/http-helpers.mjs";
 import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
+import { createAuthContextMiddleware, needLogin, loginUser, logoutUser } from "./middleware/auth.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -76,30 +77,11 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(csrfOriginCheck);
 
   // Who is logged in (from the signed cookie), the theme, unread messages, and one-time messages.
-  app.use(route(async (req, res) => {
-    const cookies = auth.parseCookies(req.get("cookie"));
-    const userId = auth.readSession(cookies[auth.SESSION_COOKIE], secret);
-    req.me = userId ? await store.userById(userId) : null;
-    res.locals.me = req.me;
-    res.locals.theme = ["light", "dark"].includes(cookies.theme) ? cookies.theme : "system";
-    res.locals.flash = cookies.flash || "";
-    if (cookies.flash) res.clearCookie("flash");
-    res.locals.active = "";
-    res.locals.title = "";
-    res.locals.path = req.originalUrl;
-    res.locals.unread = req.me && req.method === "GET" && !req.query.fragment ? await store.unreadThreads(req.me.id) : 0;
-  }, true));
+  app.use(createAuthContextMiddleware({ store, secret }));
 
   // ---- Helpers -------------------------------------------------------------
-  const login = (req, res, userId) => res.cookie(auth.SESSION_COOKIE, auth.sessionToken(userId, secret), cookie(req, auth.SESSION_DAYS * 86_400_000));
+  const login = (req, res, userId) => loginUser(req, res, userId, secret);
   const renderToString = (view, locals) => renderViewToString(app, view, locals);
-
-  function needLogin(req, res, next) {
-    if (req.me) return next();
-    if (wantsJson(req)) return res.status(401).json({ error: "Log in to continue.", login: "/login" });
-    const nextUrl = req.method === "GET" ? req.originalUrl : back(req, "/");
-    res.redirect(303, `/login?next=${encodeURIComponent(nextUrl)}`);
-  }
 
   const findPost = async (req) => (UUID.test(req.params.id) ? store.getPost(req.params.id, req.me?.id ?? "") : null);
   const findUser = async (username) => (text.USERNAME.test(username) && !text.RESERVED.has(username) ? store.userByUsername(username) : null);
@@ -204,7 +186,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   }));
 
   app.post("/logout", (req, res) => {
-    res.clearCookie(auth.SESSION_COOKIE, { path: "/" });
+    logoutUser(res);
     res.redirect(303, "/login");
   });
 
