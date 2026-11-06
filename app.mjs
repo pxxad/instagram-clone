@@ -1,8 +1,5 @@
-// The web app: an Instagram-style network with accounts, a feed, stories, reels, likes, comments,
-// saves, reposts, follows, direct messages, music, profiles, explore, hashtags, search and notifications.
-// Every page is rendered on the server and works without JavaScript; public/app.js adds the
-// instant likes, double-tap, infinite scroll, pop-ups, players, live messages and keyboard shortcuts.
-// Data storage and image storage are passed in, so the app runs the same against MySQL or in memory.
+// The web app: modular server-rendered Instagram clone with accounts, feed, stories, reels,
+// likes, comments, saves, reposts, follows, DMs, music, profiles, explore, search and notifications.
 import express from "express";
 import methodOverride from "method-override";
 import path from "node:path";
@@ -32,13 +29,7 @@ export { PAGE_SIZE } from "./routes/feed.routes.mjs"; // feed posts per page
 export const GRID_SIZE = 24; // tiles per page on profiles, explore and hashtags
 export const REELS_PAGE = 5; // reels per page
 
-/**
- * store:      the data (store/mysql.mjs or store/memory.mjs)
- * storeImage: (uploadedFile) => URL of the stored image or video (images.mjs)
- * secret:     signs the session cookies (SESSION_SECRET)
- * demo:       { username, password } to show a "Log in as demo" button, or null
- * uploadDir:  where multer keeps uploads (default public/uploads)
- */
+/** createApp wires security, auth context, uploads, event bus, and modular route handlers. */
 export function createApp({ store, storeImage, secret, demo = null, uploadDir = path.join(here, "public", "uploads") }) {
   if (!secret) throw new Error("createApp needs a secret for the session cookies");
   const app = express();
@@ -73,44 +64,23 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   const findPost = async (req) => (UUID.test(req.params.id) ? store.getPost(req.params.id, req.me?.id ?? "") : null);
   const findUser = async (username) => (text.USERNAME.test(username) && !text.RESERVED.has(username) ? store.userByUsername(username) : null);
 
-  // Uploads: only real photos and videos (checked by their first bytes, not just the browser's word),
-  // saved under a random name with an extension chosen by us, so an upload can never be served as a web page.
+  // Uploads: only real photos and videos, saved under a random UUID name.
   const { media } = createUploadMiddleware(uploadDir);
 
-  // ---- Authentication & Appearance -------------------------------------------
+  // ---- Route modules --------------------------------------------------------
   app.use(createAuthRouter({ store, secret }));
-
-  // ---- Home feed -----------------------------------------------------------------
   app.use(createFeedRouter({ store }));
-
-  // ---- Explore, hashtags, music, search, notifications -----------------------------------------
   app.use(createDiscoveryRouter({ store, needLogin, gridSize: GRID_SIZE }));
-
-  // ---- Reels ------------------------------------------------------------------------------------
   app.use(createReelsRouter({ store, pageSize: REELS_PAGE }));
-
-  // ---- Posts -----------------------------------------------------------------------------
   app.use(createPostsRouter({ store, storeImage, media, needLogin, uploadDir, findPost }));
-
-  // ---- Comments ---------------------------------------------------------------------------
   app.use(createCommentsRouter({ store, needLogin, renderToString, findPost }));
-
-  // ---- Stories -------------------------------------------------------------------------------
   app.use(createStoriesRouter({ store, needLogin, findUser }));
-
-  // ---- Direct messages & Post sharing -------------------------------------------------------------
   app.use(createMessagesRouter({ store, needLogin, bus, renderToString, findUser, findPost }));
-
-  // ---- Settings ----------------------------------------------------------------------------------
   app.use(createSettingsRouter({ store, storeImage, media, needLogin }));
-
-  // ---- Old addresses from the first version of the app ---------------------------------------
   app.use(createLegacyRouter());
+  app.use(createProfilesRouter({ store, needLogin, findUser, gridSize: GRID_SIZE })); // Registered last before 404
 
-  // ---- Profiles (last, because /:username matches any single word) ------------------------------
-  app.use(createProfilesRouter({ store, needLogin, findUser, gridSize: GRID_SIZE }));
-
-  // ---- Errors ------------------------------------------------------------------------------------
+  // ---- Errors ---------------------------------------------------------------
   app.use((req, res) => notFound(res));
   app.use((err, req, res, next) => {
     console.error(err);
