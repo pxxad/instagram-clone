@@ -11,7 +11,7 @@ import * as auth from "./lib/auth.mjs";
 import * as text from "./lib/text.mjs";
 import * as music from "./lib/music.mjs";
 import { icon } from "./lib/icons.mjs";
-import { parseCursor, TAG } from "./store/shared.mjs";
+import { TAG } from "./store/shared.mjs";
 import {
   UUID,
   route,
@@ -31,6 +31,7 @@ import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware } from "./middleware/upload.mjs";
 import { createAuthRouter } from "./routes/auth.routes.mjs";
+import { createFeedRouter } from "./routes/feed.routes.mjs";
 import { createSettingsRouter } from "./routes/settings.routes.mjs";
 import { createReelsRouter } from "./routes/reels.routes.mjs";
 import { createStoriesRouter } from "./routes/stories.routes.mjs";
@@ -40,7 +41,7 @@ import { createMessagesRouter } from "./routes/messages.routes.mjs";
 import { createRealtimeBus } from "./lib/realtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-export const PAGE_SIZE = 8; // feed posts per page
+export { PAGE_SIZE } from "./routes/feed.routes.mjs"; // feed posts per page
 export const GRID_SIZE = 24; // tiles per page on profiles, explore and hashtags
 export const REELS_PAGE = 5; // reels per page
 
@@ -84,8 +85,6 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
 
   const findPost = async (req) => (UUID.test(req.params.id) ? store.getPost(req.params.id, req.me?.id ?? "") : null);
   const findUser = async (username) => (text.USERNAME.test(username) && !text.RESERVED.has(username) ? store.userByUsername(username) : null);
-  const sortTray = (tray, myId) =>
-    tray.sort((a, b) => (b.user.id === myId) - (a.user.id === myId) || (b.unseen > 0) - (a.unseen > 0) || b.latest - a.latest);
 
   // Uploads: only real photos and videos (checked by their first bytes, not just the browser's word),
   // saved under a random name with an extension chosen by us, so an upload can never be served as a web page.
@@ -95,25 +94,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(createAuthRouter({ store, secret }));
 
   // ---- Home feed -----------------------------------------------------------------
-  app.get("/", route(async (req, res) => {
-    if (!req.me) return res.redirect("/login");
-    const tab = req.query.tab === "foryou" ? "foryou" : "following";
-    let posts, nextUrl;
-    if (tab === "following") {
-      const page = await store.feed(req.me.id, { limit: PAGE_SIZE, before: parseCursor(req.query.cursor) });
-      posts = page.posts;
-      nextUrl = page.next && `/?cursor=${page.next}`;
-    } else {
-      const page = pageNumber(req);
-      posts = await store.explore(req.me.id, { limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
-      nextUrl = posts.length > PAGE_SIZE && `/?tab=foryou&page=${page + 1}`;
-      posts = posts.slice(0, PAGE_SIZE);
-    }
-    const first = !req.query.cursor && !req.query.page;
-    if (req.query.fragment) return res.render("partials/feed-items", { posts, nextUrl, tab, first });
-    const [tray, suggestions] = await Promise.all([store.storyTray(req.me.id), store.suggestions(req.me.id, 5)]);
-    res.render("home", { active: "home", posts, nextUrl, tab, first, tray: sortTray(tray, req.me.id), suggestions });
-  }));
+  app.use(createFeedRouter({ store }));
 
   // ---- Explore, hashtags, music, search, notifications -----------------------------------------
   const grid = (view) => async (req, res, posts, locals) => {
