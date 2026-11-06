@@ -6,8 +6,6 @@
 import express from "express";
 import methodOverride from "method-override";
 import path from "node:path";
-import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as auth from "./lib/auth.mjs";
 import * as text from "./lib/text.mjs";
@@ -38,6 +36,8 @@ import { createReelsRouter } from "./routes/reels.routes.mjs";
 import { createStoriesRouter } from "./routes/stories.routes.mjs";
 import { createCommentsRouter } from "./routes/comments.routes.mjs";
 import { createPostsRouter } from "./routes/posts.routes.mjs";
+import { createMessagesRouter } from "./routes/messages.routes.mjs";
+import { createRealtimeBus } from "./lib/realtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -65,8 +65,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
     demo,
   });
   // Live events for open pages (new messages, read receipts), keyed by user id.
-  const bus = new EventEmitter();
-  bus.setMaxListeners(0);
+  const bus = createRealtimeBus();
 
   app.use(securityHeaders);
   app.use(express.static(path.join(here, "public"), { maxAge: "1h" }));
@@ -203,104 +202,8 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   // ---- Stories -------------------------------------------------------------------------------
   app.use(createStoriesRouter({ store, needLogin, findUser }));
 
-  // ---- Direct messages ------------------------------------------------------------------------------
-  const inboxPage = async (req, res, extra = {}) => {
-    const chats = await store.inbox(req.me.id);
-    res.render("direct", { title: "Messages", active: "direct", bodyClass: "direct-page", chats, other: null, messages: [], ...extra });
-  };
-  app.get("/direct/inbox", needLogin, route(inboxPage));
-  app.get("/direct", needLogin, (req, res) => res.redirect("/direct/inbox"));
-
-  app.get("/direct/new", needLogin, route(async (req, res) => {
-    const q = str(req.query.q).slice(0, 60).replace(/^@/, "");
-    const users = (q ? await store.searchUsers(q, 20) : await store.shareTargets(req.me.id, 20)).filter((u) => u.id !== req.me.id);
-    res.render("direct-new", { title: "New message", active: "direct", q, users });
-  }));
-
-  app.get("/direct/t/:username", needLogin, route(async (req, res) => {
-    const other = await findUser(req.params.username);
-    if (!other || other.id === req.me.id) return notFound(res);
-    if (await store.markRead(req.me.id, other.id)) {
-      bus.emit(other.id, { type: "read", by: req.me.username });
-      res.locals.unread = await store.unreadThreads(req.me.id);
-    }
-    const messages = await store.thread(req.me.id, other.id);
-    await inboxPage(req, res, { other, messages, title: `${other.name || other.username} • Messages` });
-  }));
-
-  /** Sends a message (text, or a shared post) and tells the recipient's open pages. */
-  async function send(req, res, other, { body, post }) {
-    const message = { id: randomUUID(), senderId: req.me.id, recipientId: other.id, body, postId: post?.id ?? null, createdAt: new Date() };
-    await store.sendMessage(message);
-    const view = {
-      id: message.id, body, created_at: message.createdAt, read_at: null,
-      post: post ? { id: post.id, kind: post.kind, image: post.image, filter: post.filter, caption: post.caption, user: { username: post.user.username, avatar: post.user.avatar } } : null,
-    };
-    bus.emit(other.id, { type: "message", from: req.me, message: view });
-    return view;
-  }
-
-  app.post("/direct/t/:username", needLogin, route(async (req, res) => {
-    const other = await findUser(req.params.username);
-    if (!other || other.id === req.me.id) return wantsJson(req) ? res.status(404).json({ error: "This account doesn't exist." }) : notFound(res);
-    const body = str(req.body.body);
-    if (!body || text.length(body) > text.LIMITS.comment) {
-      const error = body ? `Messages can be up to ${text.count(text.LIMITS.comment)} characters.` : "Write a message first.";
-      return wantsJson(req) ? res.status(400).json({ error }) : res.status(400).send(error);
-    }
-    const view = await send(req, res, other, { body });
-    if (!wantsJson(req)) return res.redirect(303, `/direct/t/${other.username}`);
-    res.json({ html: await renderToString("partials/message", { ...res.locals, m: { ...view, mine: true }, other }) });
-  }));
-
-  // Share a post into chats: the share sheet lists recent chats and the people you follow.
-  app.get("/p/:id/share", needLogin, route(async (req, res) => {
-    const post = await findPost(req);
-    if (!post) return notFound(res);
-    const people = await store.shareTargets(req.me.id, 50);
-    res.render(req.query.fragment ? "partials/share-sheet" : "share", { title: "Share", post, people });
-  }));
-
-  app.post("/p/:id/share", needLogin, route(async (req, res) => {
-    const post = await findPost(req);
-    const other = post && (await findUser(str(req.body.to)));
-    if (!post || !other || other.id === req.me.id) return wantsJson(req) ? res.status(404).json({ error: "Couldn't send that. Try again." }) : notFound(res);
-    await send(req, res, other, { body: str(req.body.body).slice(0, 500), post });
-    done(req, res, { sent: true, to: other.username }, `/direct/t/${other.username}`);
-  }));
-
-  // New messages and read receipts arrive on open pages as Server-Sent Events.
-  app.get("/direct/events", needLogin, (req, res) => {
-    res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-    res.flushHeaders();
-    res.write("retry: 4000\n\n");
-    const me = req.me;
-    const listener = async (event) => {
-      try {
-        if (event.type === "message") {
-          const html = await renderToString("partials/message", { me, m: { ...event.message, mine: false }, other: event.from });
-          const unread = await store.unreadThreads(me.id);
-          res.write(`event: message\ndata: ${JSON.stringify({ from: event.from.username, name: event.from.name, html, unread })}\n\n`);
-        } else if (event.type === "read") {
-          res.write(`event: read\ndata: ${JSON.stringify({ by: event.by })}\n\n`);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    bus.on(me.id, listener);
-    const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
-    req.on("close", () => {
-      bus.off(me.id, listener);
-      clearInterval(ping);
-    });
-  });
-
-  app.post("/direct/t/:username/read", needLogin, route(async (req, res) => {
-    const other = await findUser(req.params.username);
-    if (other && (await store.markRead(req.me.id, other.id))) bus.emit(other.id, { type: "read", by: req.me.username });
-    res.json({ unread: await store.unreadThreads(req.me.id) });
-  }));
+  // ---- Direct messages & Post sharing -------------------------------------------------------------
+  app.use(createMessagesRouter({ store, needLogin, bus, renderToString, findUser, findPost }));
 
   // ---- Settings ----------------------------------------------------------------------------------
   app.use(createSettingsRouter({ store, storeImage, media, needLogin }));
