@@ -31,8 +31,9 @@ import {
   sortTray,
 } from "./lib/http-helpers.mjs";
 import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
-import { createAuthContextMiddleware, needLogin, loginUser, logoutUser } from "./middleware/auth.mjs";
+import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware, sniff, discard, takeUpload as takeUploadCore } from "./middleware/upload.mjs";
+import { createAuthRouter } from "./routes/auth.routes.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -76,7 +77,6 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(createAuthContextMiddleware({ store, secret }));
 
   // ---- Helpers -------------------------------------------------------------
-  const login = (req, res, userId) => loginUser(req, res, userId, secret);
   const renderToString = (view, locals) => renderViewToString(app, view, locals);
 
   const findPost = async (req) => (UUID.test(req.params.id) ? store.getPost(req.params.id, req.me?.id ?? "") : null);
@@ -89,67 +89,8 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   const { media } = createUploadMiddleware(uploadDir);
   const takeUpload = (req, opts) => takeUploadCore(req, { ...opts, storeImage });
 
-  // ---- Logging in ------------------------------------------------------------
-  const limiter = auth.loginLimiter();
-
-  async function loginPage(req, res, { status = 200, error = "", username = "" } = {}) {
-    const photos = (await store.explore("", { limit: 6 })).filter((p) => p.kind === "photo").slice(0, 4).map((p) => p.image);
-    res.status(status).render("login", { title: "Login", error, username, next: localPath(req.query.next || req.body?.next), photos });
-  }
-  app.get("/login", route(async (req, res) => (req.me ? res.redirect("/") : loginPage(req, res))));
-
-  app.post("/login", route(async (req, res) => {
-    const username = str(req.body.username).toLowerCase().replace(/^@/, "");
-    const password = typeof req.body.password === "string" ? req.body.password : "";
-    const key = `${req.ip} ${username}`;
-    const wait = limiter.wait(key);
-    if (wait) return loginPage(req, res, { status: 429, username, error: `Too many failed attempts. Try again in ${text.plural(wait, "minute")}.` });
-    const account = username ? await store.credentials(username) : null;
-    const ok = account ? await auth.verifyPassword(password, account.passwordHash) : await auth.wasteTime(password);
-    if (!ok) {
-      limiter.fail(key);
-      return loginPage(req, res, { status: 401, username, error: "The username or password is incorrect. Check them and try again." });
-    }
-    limiter.clear(key);
-    login(req, res, account.id);
-    res.redirect(303, localPath(req.body.next) || "/");
-  }));
-
-  app.get("/signup", (req, res) => (req.me ? res.redirect("/") : res.render("signup", { title: "Sign up", errors: {}, values: {} })));
-
-  app.post("/signup", route(async (req, res) => {
-    const values = { name: str(req.body.name), username: str(req.body.username).toLowerCase().replace(/^@/, "") };
-    const password = typeof req.body.password === "string" ? req.body.password : "";
-    const errors = {};
-    if (!text.USERNAME.test(values.username)) errors.username = "Usernames can use letters, numbers, underscores and periods (up to 30), and can't start or end with a period.";
-    else if (text.RESERVED.has(values.username)) errors.username = "This username isn't available. Try another.";
-    if (text.length(values.name) > text.LIMITS.name) errors.name = `Names can be up to ${text.LIMITS.name} characters.`;
-    if (password.length < text.LIMITS.password) errors.password = `Use at least ${text.LIMITS.password} characters for your password.`;
-    if (!errors.username && (await store.userByUsername(values.username))) errors.username = "This username isn't available. Try another.";
-    if (Object.keys(errors).length) return res.status(400).render("signup", { title: "Sign up", errors, values });
-    const id = randomUUID();
-    try {
-      await store.createUser({ id, ...values, passwordHash: await auth.hashPassword(password) });
-    } catch (err) {
-      if (err.code !== "TAKEN") throw err;
-      return res.status(400).render("signup", { title: "Sign up", errors: { username: "This username isn't available. Try another." }, values });
-    }
-    login(req, res, id);
-    flash(req, res, `Welcome, @${values.username}! Follow a few accounts to fill your feed.`);
-    res.redirect(303, "/");
-  }));
-
-  app.post("/logout", (req, res) => {
-    logoutUser(res);
-    res.redirect(303, "/login");
-  });
-
-  app.post("/appearance", (req, res) => {
-    const theme = ["light", "dark"].includes(req.body.theme) ? req.body.theme : "system";
-    if (theme === "system") res.clearCookie("theme", { path: "/" });
-    else res.cookie("theme", theme, { sameSite: "lax", path: "/", maxAge: 365 * 86_400_000 });
-    done(req, res, { theme }, "/");
-  });
+  // ---- Authentication & Appearance -------------------------------------------
+  app.use(createAuthRouter({ store, secret }));
 
   // ---- Home feed -----------------------------------------------------------------
   app.get("/", route(async (req, res) => {
