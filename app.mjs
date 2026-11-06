@@ -16,12 +16,27 @@ import * as text from "./lib/text.mjs";
 import * as music from "./lib/music.mjs";
 import { icon } from "./lib/icons.mjs";
 import { parseCursor, TAG } from "./store/shared.mjs";
+import {
+  UUID,
+  route,
+  cookie,
+  flash,
+  wantsJson,
+  str,
+  pageNumber,
+  localPath,
+  back,
+  done,
+  notFound,
+  renderToString as renderViewToString,
+  trackId,
+  sortTray,
+} from "./lib/http-helpers.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
 export const GRID_SIZE = 24; // tiles per page on profiles, explore and hashtags
 export const REELS_PAGE = 5; // reels per page
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const IMAGE_TYPES = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif" };
 const VIDEO_TYPES = { "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov" };
 const MB = 1024 * 1024;
@@ -112,26 +127,8 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   }, true));
 
   // ---- Helpers -------------------------------------------------------------
-  const cookie = (req, maxAge) => ({ httpOnly: true, sameSite: "lax", secure: req.secure, path: "/", maxAge });
-  const flash = (req, res, message) => res.cookie("flash", message, cookie(req, 60_000));
-  const wantsJson = (req) => (req.get("accept") || "").includes("application/json");
-  const str = (v) => (typeof v === "string" ? v.trim() : "");
-  const pageNumber = (req) => Math.min(1000, Math.max(1, Number.parseInt(req.query.page, 10) || 1));
-  const localPath = (p) => (typeof p === "string" && /^\/(?![/\\])/.test(p) ? p : "");
-  /** The page the request came from, if it is on this site. */
-  function back(req, fallback) {
-    try {
-      const url = new URL(req.get("referer"));
-      if (url.host === req.get("host")) return url.pathname + url.search;
-    } catch {}
-    return fallback;
-  }
-  /** Answers a like/save/follow: JSON for the page's script, or a redirect for a plain form. */
-  const done = (req, res, data, fallback) => (wantsJson(req) ? res.json(data) : res.redirect(303, back(req, fallback)));
-  const notFound = (res) => res.status(404).render("404", { title: "Page not found" });
   const login = (req, res, userId) => res.cookie(auth.SESSION_COOKIE, auth.sessionToken(userId, secret), cookie(req, auth.SESSION_DAYS * 86_400_000));
-  const renderToString = (view, locals) => new Promise((ok, fail) => app.render(view, locals, (err, html) => (err ? fail(err) : ok(html))));
-  const trackId = (v) => (music.trackOf(v) ? v : "");
+  const renderToString = (view, locals) => renderViewToString(app, view, locals);
 
   function needLogin(req, res, next) {
     if (req.me) return next();
@@ -747,9 +744,4 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
     res.status(500).render("error", { title: "Error" });
   });
   return app;
-}
-
-/** Async route handlers: errors go to the error handler instead of crashing the server. `middleware` calls next() after. */
-function route(fn, middleware = false) {
-  return (req, res, next) => Promise.resolve(fn(req, res)).then(() => middleware && next(), next);
 }
