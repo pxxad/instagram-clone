@@ -472,11 +472,25 @@ test("text from users is escaped everywhere (no HTML injection)", async () => {
 });
 
 test("every page sends a strict Content-Security-Policy and other protective headers", async () => {
-  const { headers } = await client().request("/login");
+  const { headers, status } = await client().request("/login");
+  assert.equal(status, 200);
   assert.match(headers.get("content-security-policy"), /script-src 'self'/);
   assert.match(headers.get("content-security-policy"), /frame-ancestors 'none'/);
   assert.equal(headers.get("x-content-type-options"), "nosniff");
+  assert.equal(headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.equal(headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(headers.get("permissions-policy"), "camera=(), microphone=(), geolocation=()");
   assert.equal(headers.get("x-powered-by"), null);
+
+  // Security headers are also present on error responses (e.g. 404)
+  const errRes = await client().request("/non-existent-page-for-header-check");
+  assert.equal(errRes.status, 404);
+  assert.match(errRes.headers.get("content-security-policy"), /script-src 'self'/);
+  assert.equal(errRes.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(errRes.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.equal(errRes.headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(errRes.headers.get("permissions-policy"), "camera=(), microphone=(), geolocation=()");
+
   const cookie = await (async () => {
     const res = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams(DEMO), redirect: "manual" });
     return res.headers.getSetCookie().find((c) => c.startsWith("sid="));
@@ -489,10 +503,22 @@ test("requests from other websites are refused (CSRF)", async () => {
   const c = client();
   await c.login();
   const post = data.posts[10];
-  const res = await c.request(`/p/${post.id}/like`, { method: "POST", headers: { Origin: "https://evil.example" } });
-  assert.equal(res.status, 403);
+
+  // Foreign Origin is rejected
+  const resEvilOrigin = await c.request(`/p/${post.id}/like`, { method: "POST", headers: { Origin: "https://evil.example" } });
+  assert.equal(resEvilOrigin.status, 403);
+
+  // Foreign Referer is rejected
+  const resEvilReferer = await c.request(`/p/${post.id}/like`, { method: "POST", headers: { Referer: "https://evil.example/malicious-page" } });
+  assert.equal(resEvilReferer.status, 403);
+
+  // Same Origin is accepted
   const same = await c.request(`/p/${post.id}/like`, { method: "POST", json: true, headers: { Origin: base } });
   assert.equal(same.status, 200);
+
+  // Requests without Origin/Referer (e.g. standard same-site form posts) are accepted
+  const unlike = await c.request(`/p/${post.id}/like`, { method: "POST", json: true, body: { _method: "DELETE" } });
+  assert.equal(unlike.status, 200);
 });
 
 test("old addresses from the first version redirect", async () => {
