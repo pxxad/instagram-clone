@@ -32,6 +32,7 @@ import {
   trackId,
   sortTray,
 } from "./lib/http-helpers.mjs";
+import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -40,20 +41,6 @@ export const REELS_PAGE = 5; // reels per page
 const IMAGE_TYPES = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif" };
 const VIDEO_TYPES = { "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov" };
 const MB = 1024 * 1024;
-
-const CSP = [
-  "default-src 'self'",
-  "img-src 'self' https: data: blob:",
-  "media-src 'self' blob:",
-  "style-src 'self' https://fonts.googleapis.com",
-  "font-src https://fonts.gstatic.com",
-  "script-src 'self'",
-  "connect-src 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "base-uri 'none'",
-  "object-src 'none'",
-].join("; ");
 
 /**
  * store:      the data (store/mysql.mjs or store/memory.mjs)
@@ -79,37 +66,14 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   const bus = new EventEmitter();
   bus.setMaxListeners(0);
 
-  app.use((req, res, next) => {
-    res.set({
-      "Content-Security-Policy": CSP,
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "strict-origin-when-cross-origin",
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    });
-    next();
-  });
+  app.use(securityHeaders);
   app.use(express.static(path.join(here, "public"), { maxAge: "1h" }));
   const catalogCss = text.filtersCss() + music.coversCss();
   app.get("/catalog.css", (req, res) => res.type("css").set("Cache-Control", "public, max-age=3600").send(catalogCss));
   app.use(express.urlencoded({ extended: false, limit: "100kb" }));
   app.use(express.json({ limit: "100kb" }));
   app.use(methodOverride("_method"));
-
-  // Forms and fetches must come from this site: a request another site makes in the background
-  // carries its own Origin, which is refused (the session cookie is also SameSite=Lax).
-  app.use((req, res, next) => {
-    if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
-    const from = req.get("origin") || req.get("referer");
-    if (from) {
-      let host = "";
-      try {
-        host = new URL(from).host;
-      } catch {}
-      if (host !== req.get("host")) return res.status(403).send("This request came from another website and was blocked.");
-    }
-    next();
-  });
+  app.use(csrfOriginCheck);
 
   // Who is logged in (from the signed cookie), the theme, unread messages, and one-time messages.
   app.use(route(async (req, res) => {
