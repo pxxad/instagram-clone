@@ -7,27 +7,10 @@ import express from "express";
 import methodOverride from "method-override";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as auth from "./lib/auth.mjs";
 import * as text from "./lib/text.mjs";
 import * as music from "./lib/music.mjs";
 import { icon } from "./lib/icons.mjs";
-import {
-  UUID,
-  route,
-  flash,
-  wantsJson,
-  str,
-  pageNumber,
-  localPath,
-  back,
-  done,
-  notFound,
-  renderToString as renderViewToString,
-  trackId,
-  sortTray,
-  grid,
-  offset,
-} from "./lib/http-helpers.mjs";
+import { UUID, wantsJson, notFound, renderToString as renderViewToString } from "./lib/http-helpers.mjs";
 import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware } from "./middleware/upload.mjs";
@@ -41,6 +24,7 @@ import { createCommentsRouter } from "./routes/comments.routes.mjs";
 import { createPostsRouter } from "./routes/posts.routes.mjs";
 import { createMessagesRouter } from "./routes/messages.routes.mjs";
 import { createLegacyRouter } from "./routes/legacy.routes.mjs";
+import { createProfilesRouter } from "./routes/profiles.routes.mjs";
 import { createRealtimeBus } from "./lib/realtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -124,58 +108,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(createLegacyRouter());
 
   // ---- Profiles (last, because /:username matches any single word) ------------------------------
-  const followRoute = (follow) => [needLogin, route(async (req, res) => {
-    const user = await findUser(req.params.username);
-    if (!user) return wantsJson(req) ? res.status(404).json({ error: "This account doesn't exist." }) : notFound(res);
-    if (user.id === req.me.id) return wantsJson(req) ? res.status(400).json({ error: "You can't follow yourself." }) : res.redirect(303, `/${user.username}`);
-    await (follow ? store.follow(req.me.id, user.id) : store.unfollow(req.me.id, user.id));
-    const counts = await store.profileCounts(user.id);
-    done(req, res, { following: follow, followers: counts.followers }, `/${user.username}`);
-  })];
-  app.post("/:username/follow", ...followRoute(true));
-  app.delete("/:username/follow", ...followRoute(false));
-
-  const TABS = ["posts", "reels", "reposts", "saved"];
-  async function profile(req, res, tab) {
-    const user = await findUser(req.params.username);
-    if (!user) return notFound(res);
-    const own = req.me?.id === user.id;
-    if (tab === "saved" && !own) return res.redirect(`/${user.username}`);
-    const viewer = req.me?.id ?? "";
-    const opts = { limit: GRID_SIZE + 1, offset: offset(req) };
-    const list = {
-      posts: () => store.userPosts(user.id, viewer, opts),
-      reels: () => store.userPosts(user.id, viewer, { ...opts, kind: "reel" }),
-      reposts: () => store.repostsBy(user.id, viewer, opts),
-      saved: () => store.savedPosts(user.id, opts),
-    }[tab]();
-    const layout = tab === "reels" ? "reels" : "profile";
-    if (req.query.fragment) return grid("profile")(req, res, await list, { layout });
-    const [posts, counts, following, followsYou, mutuals, stories] = await Promise.all([
-      list,
-      store.profileCounts(user.id),
-      req.me && !own ? store.isFollowing(req.me.id, user.id) : false,
-      req.me && !own ? store.isFollowing(user.id, req.me.id) : false,
-      req.me && !own ? store.mutuals(req.me.id, user.id) : { names: [], total: 0 },
-      store.stories(user.id, viewer),
-    ]);
-    await grid("profile")(req, res, posts, {
-      title: user.name ? `${user.name} (@${user.username})` : `@${user.username}`,
-      active: own ? "profile" : "", layout,
-      user, own, tab, counts, following, followsYou, mutuals,
-      story: stories.length ? (stories.every((s) => s.seen) ? "seen" : "new") : "",
-    });
-  }
-  for (const tab of TABS) app.get(tab === "posts" ? "/:username" : `/:username/${tab}`, route((req, res) => profile(req, res, tab)));
-
-  const people = (which) => route(async (req, res) => {
-    const user = await findUser(req.params.username);
-    if (!user) return notFound(res);
-    const list = await store[which](user.id, req.me?.id ?? "");
-    res.render("people", { title: `${which === "followers" ? "Followers" : "Following"} • @${user.username}`, user, which, list });
-  });
-  app.get("/:username/followers", people("followers"));
-  app.get("/:username/following", people("following"));
+  app.use(createProfilesRouter({ store, needLogin, findUser, gridSize: GRID_SIZE }));
 
   // ---- Errors ------------------------------------------------------------------------------------
   app.use((req, res) => notFound(res));
