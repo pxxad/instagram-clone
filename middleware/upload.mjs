@@ -145,3 +145,4 @@ export function createUploadMiddleware(uploadDir) {
 
   return { upload, media };
 }
+

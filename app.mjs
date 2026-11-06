@@ -18,7 +18,6 @@ import { parseCursor, TAG } from "./store/shared.mjs";
 import {
   UUID,
   route,
-  cookie,
   flash,
   wantsJson,
   str,
