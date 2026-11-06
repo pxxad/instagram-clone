@@ -35,6 +35,7 @@ import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware, sniff, discard, takeUpload as takeUploadCore } from "./middleware/upload.mjs";
 import { createAuthRouter } from "./routes/auth.routes.mjs";
 import { createSettingsRouter } from "./routes/settings.routes.mjs";
+import { createReelsRouter } from "./routes/reels.routes.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -190,24 +191,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   }));
 
   // ---- Reels ------------------------------------------------------------------------------------
-  app.get("/reels", route(async (req, res) => {
-    const page = pageNumber(req);
-    const viewer = req.me?.id ?? "";
-    let reels = await store.reels(viewer, { limit: REELS_PAGE + 1, offset: (page - 1) * REELS_PAGE });
-    const nextUrl = reels.length > REELS_PAGE && `/reels?page=${page + 1}`;
-    reels = reels.slice(0, REELS_PAGE);
-    // /reels?start=<id> opens a particular reel first (from a profile or a shared link).
-    const start = page === 1 && UUID.test(req.query.start ?? "") ? await store.getPost(req.query.start, viewer) : null;
-    if (start?.kind === "reel") reels = [start, ...reels.filter((r) => r.id !== start.id)];
-    if (req.me) await Promise.all(reels.map(async (r) => (r.following = await store.isFollowing(req.me.id, r.user.id))));
-    if (req.query.fragment) return res.render("partials/reel-items", { reels, nextUrl });
-    res.render("reels", { title: "Reels", active: "reels", reels, nextUrl, bodyClass: "reels-page" });
-  }));
-
-  app.post("/p/:id/view", route(async (req, res) => {
-    if (UUID.test(req.params.id)) await store.addView(req.params.id);
-    res.status(204).end();
-  }));
+  app.use(createReelsRouter({ store, pageSize: REELS_PAGE }));
 
   // ---- Creating posts, reels and stories --------------------------------------------------
   const KINDS = ["post", "reel", "story"];
