@@ -34,6 +34,7 @@ import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware, sniff, discard, takeUpload as takeUploadCore } from "./middleware/upload.mjs";
 import { createAuthRouter } from "./routes/auth.routes.mjs";
+import { createSettingsRouter } from "./routes/settings.routes.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -488,29 +489,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   }));
 
   // ---- Settings ----------------------------------------------------------------------------------
-  app.get("/accounts/edit", needLogin, (req, res) =>
-    res.render("settings", { title: "Edit profile", values: req.me, error: "" }));
-
-  app.post("/accounts/edit", needLogin, media, route(async (req, res) => {
-    const values = { name: str(req.body.name), bio: str(req.body.bio).replace(/\r\n/g, "\n") };
-    let error = "";
-    if (text.length(values.name) > text.LIMITS.name) error = `Names can be up to ${text.LIMITS.name} characters.`;
-    else if (text.length(values.bio) > text.LIMITS.bio) error = `Bios can be up to ${text.LIMITS.bio} characters.`;
-    if (!error && (req.media || req.uploadError)) {
-      const image = await takeUpload(req, { allowVideo: false });
-      if (image.error) error = image.error;
-      else values.avatar = image.url;
-    }
-    if (req.body.removePhoto === "1" && !values.avatar) values.avatar = "";
-    if (error) {
-      await discard(req.media, req.poster);
-      return res.status(400).render("settings", { title: "Edit profile", values: { ...req.me, ...values }, error });
-    }
-    await discard(req.poster);
-    await store.updateUser(req.me.id, values);
-    flash(req, res, "Profile saved.");
-    res.redirect(303, `/${req.me.username}`);
-  }));
+  app.use(createSettingsRouter({ store, storeImage, media, needLogin }));
 
   // ---- Old addresses from the first version of the app ---------------------------------------
   app.get("/posts", (req, res) => res.redirect(301, "/"));
