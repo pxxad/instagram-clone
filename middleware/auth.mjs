@@ -53,3 +53,4 @@ export function loginUser(req, res, userId, secret) {
 export function logoutUser(res) {
   res.clearCookie(auth.SESSION_COOKIE, { path: "/" });
 }
+

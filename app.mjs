@@ -5,11 +5,10 @@
 // Data storage and image storage are passed in, so the app runs the same against MySQL or in memory.
 import express from "express";
 import methodOverride from "method-override";
-import multer from "multer";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { open, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import * as auth from "./lib/auth.mjs";
 import * as text from "./lib/text.mjs";
@@ -34,14 +33,12 @@ import {
 } from "./lib/http-helpers.mjs";
 import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 import { createAuthContextMiddleware, needLogin, loginUser, logoutUser } from "./middleware/auth.mjs";
+import { createUploadMiddleware, sniff, discard, takeUpload as takeUploadCore } from "./middleware/upload.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
 export const GRID_SIZE = 24; // tiles per page on profiles, explore and hashtags
 export const REELS_PAGE = 5; // reels per page
-const IMAGE_TYPES = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif" };
-const VIDEO_TYPES = { "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov" };
-const MB = 1024 * 1024;
 
 /**
  * store:      the data (store/mysql.mjs or store/memory.mjs)
@@ -90,50 +87,8 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
 
   // Uploads: only real photos and videos (checked by their first bytes, not just the browser's word),
   // saved under a random name with an extension chosen by us, so an upload can never be served as a web page.
-  const upload = multer({
-    storage: multer.diskStorage({
-      destination: uploadDir,
-      filename: (req, file, cb) => cb(null, randomUUID() + (IMAGE_TYPES[file.mimetype] || VIDEO_TYPES[file.mimetype])),
-    }),
-    limits: { fileSize: 50 * MB, files: 2 },
-    fileFilter: (req, file, cb) => cb(null, file.mimetype in IMAGE_TYPES || (file.fieldname === "media" && file.mimetype in VIDEO_TYPES)),
-  });
-  const media = (req, res, next) =>
-    upload.fields([{ name: "media", maxCount: 1 }, { name: "poster", maxCount: 1 }])(req, res, (err) => {
-      if (err) req.uploadError = err.code === "LIMIT_FILE_SIZE" ? "Videos can be up to 50 MB and photos up to 10 MB." : "That file couldn't be uploaded. Try another one.";
-      req.media = req.files?.media?.[0];
-      req.poster = req.files?.poster?.[0];
-      next();
-    });
-  /** What a file really is, from its first bytes: "image", "video" or null. */
-  async function sniff(file) {
-    const handle = await open(file.path);
-    const { buffer, bytesRead } = await handle.read(Buffer.alloc(16), 0, 16, 0).finally(() => handle.close());
-    const b = buffer.subarray(0, bytesRead);
-    const at = (start, end) => b.subarray(start, end).toString("latin1");
-    if ((b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || at(0, 4) === "\x89PNG" || at(0, 4) === "GIF8" || (at(0, 4) === "RIFF" && at(8, 12) === "WEBP")) return "image";
-    if (at(4, 8) === "ftyp") return ["avif", "avis", "heic", "heix", "mif1"].includes(at(8, 12)) ? "image" : "video";
-    if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video";
-    return null;
-  }
-  const discard = (...files) => Promise.all(files.filter(Boolean).map((f) => unlink(f.path).catch(() => {})));
-  /** Checks an upload is what it claims to be; returns { kind, url } or { error }. */
-  async function takeUpload(req, { allowVideo }) {
-    if (req.uploadError) return { error: req.uploadError };
-    const file = req.media;
-    if (!file) return { error: allowVideo ? "Choose a photo or a video." : "Choose a photo (JPEG, PNG, GIF, WebP or AVIF)." };
-    const kind = await sniff(file);
-    const claimed = file.mimetype.startsWith("video/") ? "video" : "image";
-    if (kind !== claimed || (kind === "video" && !allowVideo)) {
-      await discard(file);
-      return { error: allowVideo ? "That file isn't a photo or a video. Choose a JPEG, PNG, WebP, MP4, WebM or MOV file." : "That file isn't a photo. Choose a JPEG, PNG, GIF, WebP or AVIF image." };
-    }
-    if (kind === "image" && file.size > 10 * MB) {
-      await discard(file);
-      return { error: "Photos can be up to 10 MB." };
-    }
-    return { kind, url: await storeImage(file) };
-  }
+  const { media } = createUploadMiddleware(uploadDir);
+  const takeUpload = (req, opts) => takeUploadCore(req, { ...opts, storeImage });
 
   // ---- Logging in ------------------------------------------------------------
   const limiter = auth.loginLimiter();
