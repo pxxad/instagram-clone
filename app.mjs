@@ -40,6 +40,7 @@ import { createStoriesRouter } from "./routes/stories.routes.mjs";
 import { createCommentsRouter } from "./routes/comments.routes.mjs";
 import { createPostsRouter } from "./routes/posts.routes.mjs";
 import { createMessagesRouter } from "./routes/messages.routes.mjs";
+import { createLegacyRouter } from "./routes/legacy.routes.mjs";
 import { createRealtimeBus } from "./lib/realtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -120,11 +121,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(createSettingsRouter({ store, storeImage, media, needLogin }));
 
   // ---- Old addresses from the first version of the app ---------------------------------------
-  app.get("/posts", (req, res) => res.redirect(301, "/"));
-  app.get("/posts/new", (req, res) => res.redirect(301, "/create"));
-  app.get("/posts/:id", (req, res) => res.redirect(301, `/p/${encodeURIComponent(req.params.id)}`));
-  app.get("/posts/:id/edit", (req, res) => res.redirect(301, `/p/${encodeURIComponent(req.params.id)}/edit`));
-  app.get("/reel/:id", (req, res) => res.redirect(301, `/reels?start=${encodeURIComponent(req.params.id)}`));
+  app.use(createLegacyRouter());
 
   // ---- Profiles (last, because /:username matches any single word) ------------------------------
   const followRoute = (follow) => [needLogin, route(async (req, res) => {
