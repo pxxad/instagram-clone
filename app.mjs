@@ -37,6 +37,7 @@ import { createAuthRouter } from "./routes/auth.routes.mjs";
 import { createSettingsRouter } from "./routes/settings.routes.mjs";
 import { createReelsRouter } from "./routes/reels.routes.mjs";
 import { createStoriesRouter } from "./routes/stories.routes.mjs";
+import { createCommentsRouter } from "./routes/comments.routes.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PAGE_SIZE = 8; // feed posts per page
@@ -328,30 +329,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.delete("/p/:id/repost", ...toggle(async (me, p) => ({ reposted: false, repost_count: await store.unrepost(me, p.id) })));
 
   // ---- Comments ---------------------------------------------------------------------------
-  app.post("/p/:id/comments", needLogin, route(async (req, res) => {
-    const post = await findPost(req);
-    if (!post) return wantsJson(req) ? res.status(404).json({ error: "This post was deleted." }) : notFound(res);
-    const body = str(req.body.body);
-    if (!body || text.length(body) > text.LIMITS.comment) {
-      const error = body ? `Comments can be up to ${text.count(text.LIMITS.comment)} characters.` : "Write a comment first.";
-      return wantsJson(req) ? res.status(400).json({ error }) : res.status(400).send(error);
-    }
-    const id = randomUUID();
-    await store.addComment({ id, postId: post.id, userId: req.me.id, body });
-    if (!wantsJson(req)) return res.redirect(303, back(req, `/p/${post.id}`));
-    const comment = { id, post_id: post.id, body, created_at: new Date(), user: req.me };
-    res.json({ html: await renderToString("partials/comment", { ...res.locals, comment, post }), comment_count: post.comment_count + 1 });
-  }));
-
-  app.delete("/comments/:id", needLogin, route(async (req, res) => {
-    const comment = UUID.test(req.params.id) ? await store.getComment(req.params.id) : null;
-    if (!comment) return wantsJson(req) ? res.status(404).json({ error: "This comment was deleted." }) : notFound(res);
-    const post = await store.getPost(comment.post_id, req.me.id);
-    // People can delete their own comments, and any comment on their own posts.
-    if (comment.user_id !== req.me.id && post.user.id !== req.me.id) return res.status(403).send("You can only delete your own comments.");
-    await store.removeComment(comment.id);
-    done(req, res, { deleted: true, comment_count: post.comment_count - 1 }, `/p/${post.id}`);
-  }));
+  app.use(createCommentsRouter({ store, needLogin, renderToString, findPost }));
 
   // ---- Stories -------------------------------------------------------------------------------
   app.use(createStoriesRouter({ store, needLogin, findUser }));
