@@ -11,7 +11,6 @@ import * as auth from "./lib/auth.mjs";
 import * as text from "./lib/text.mjs";
 import * as music from "./lib/music.mjs";
 import { icon } from "./lib/icons.mjs";
-import { TAG } from "./store/shared.mjs";
 import {
   UUID,
   route,
@@ -26,12 +25,15 @@ import {
   renderToString as renderViewToString,
   trackId,
   sortTray,
+  grid,
+  offset,
 } from "./lib/http-helpers.mjs";
 import { securityHeaders, csrfOriginCheck } from "./middleware/security.mjs";
 import { createAuthContextMiddleware, needLogin } from "./middleware/auth.mjs";
 import { createUploadMiddleware } from "./middleware/upload.mjs";
 import { createAuthRouter } from "./routes/auth.routes.mjs";
 import { createFeedRouter } from "./routes/feed.routes.mjs";
+import { createDiscoveryRouter } from "./routes/discovery.routes.mjs";
 import { createSettingsRouter } from "./routes/settings.routes.mjs";
 import { createReelsRouter } from "./routes/reels.routes.mjs";
 import { createStoriesRouter } from "./routes/stories.routes.mjs";
@@ -97,79 +99,7 @@ export function createApp({ store, storeImage, secret, demo = null, uploadDir = 
   app.use(createFeedRouter({ store }));
 
   // ---- Explore, hashtags, music, search, notifications -----------------------------------------
-  const grid = (view) => async (req, res, posts, locals) => {
-    const page = pageNumber(req);
-    const more = posts.length > GRID_SIZE;
-    const url = new URL(req.originalUrl, "http://x");
-    url.searchParams.delete("fragment");
-    url.searchParams.set("page", page + 1);
-    const data = { ...locals, posts: posts.slice(0, GRID_SIZE), nextUrl: more && url.pathname + url.search };
-    res.render(req.query.fragment ? "partials/grid-items" : view, data);
-  };
-  const offset = (req) => (pageNumber(req) - 1) * GRID_SIZE;
-
-  app.get("/explore", route(async (req, res) => {
-    const posts = await store.explore(req.me?.id ?? "", { limit: GRID_SIZE + 1, offset: offset(req) });
-    await grid("explore")(req, res, posts, { title: "Explore", active: "explore", layout: "explore" });
-  }));
-
-  app.get("/explore/tags/:tag", route(async (req, res) => {
-    const tag = req.params.tag.toLowerCase();
-    if (!TAG.test(tag)) return notFound(res);
-    const [posts, total] = await Promise.all([
-      store.tagPosts(tag, req.me?.id ?? "", { limit: GRID_SIZE + 1, offset: offset(req) }),
-      store.tagCount(tag),
-    ]);
-    if (!total) return notFound(res);
-    await grid("tag")(req, res, posts, { title: `#${tag}`, active: "explore", tag, total, layout: "explore" });
-  }));
-
-  app.get("/audio/:id", route(async (req, res) => {
-    const track = music.trackOf(req.params.id);
-    if (!track) return notFound(res);
-    const [posts, total] = await Promise.all([
-      store.audioPosts(track.id, req.me?.id ?? "", { limit: GRID_SIZE + 1, offset: offset(req) }),
-      store.audioCount(track.id),
-    ]);
-    await grid("audio")(req, res, posts, { title: `${track.title} • ${track.artist}`, active: "explore", track, total, layout: "profile" });
-  }));
-
-  app.get("/search", route(async (req, res) => {
-    const q = str(req.query.q).slice(0, 60);
-    const word = q.replace(/^[#@]/, "");
-    const users = word ? await store.searchUsers(word, 20) : [];
-    const tag = q.startsWith("#") || !users.length ? word.toLowerCase() : "";
-    const tagTotal = tag && TAG.test(tag) ? await store.tagCount(tag) : 0;
-    const data = { q, users, tag: tagTotal ? tag : "", tagTotal };
-    if (req.query.fragment) return res.render("partials/search-results", data);
-    res.render("search", { ...data, title: "Search", active: "search" });
-  }));
-
-  app.get("/activity", needLogin, route(async (req, res) => {
-    const items = await store.activity(req.me.id, { limit: 100 });
-    const now = Date.now();
-    // Likes on the same photo in the same period become one line: "a, b and 3 others liked your photo."
-    const combineLikes = (list) => {
-      const byPost = new Map();
-      return list.filter((it) => {
-        if (it.type !== "like") return true;
-        const first = byPost.get(it.post.id);
-        if (!first) {
-          byPost.set(it.post.id, Object.assign(it, { also: [] }));
-          return true;
-        }
-        first.also.push(it.user);
-        return false;
-      });
-    };
-    const groups = [["Today", 86_400_000], ["This week", 7 * 86_400_000], ["This month", 30 * 86_400_000], ["Earlier", Infinity]]
-      .map(([label, within], i, all) => ({
-        label,
-        items: combineLikes(items.filter((it) => now - it.created_at < within && (i === 0 || now - it.created_at >= all[i - 1][1]))),
-      }))
-      .filter((g) => g.items.length);
-    res.render("activity", { title: "Notifications", active: "activity", groups });
-  }));
+  app.use(createDiscoveryRouter({ store, needLogin, gridSize: GRID_SIZE }));
 
   // ---- Reels ------------------------------------------------------------------------------------
   app.use(createReelsRouter({ store, pageSize: REELS_PAGE }));
