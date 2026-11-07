@@ -211,11 +211,15 @@ That's 46 tests with a test database, all passing on MySQL 8.0. Without one, the
 
 ```
 index.mjs           starts the server (MySQL, or --demo for in-memory)
-app.mjs             routes, sessions, uploads, live messages, security headers
+app.mjs             Express application assembler and route mounting
+routes/             modular route handlers (auth, posts, feed, reels, stories, messages, profiles)
+middleware/         session auth, security headers (CSP, CSRF), and upload handling
 store/mysql.mjs     MySQL tables and queries (and upgrades for older databases)
 store/memory.mjs    the same interface in memory (demo mode and tests)
 store/shared.mjs    ranking, feed cursors and hashtag rules both stores share
 lib/auth.mjs        password hashing, signed cookies, login lockout
+lib/realtime.mjs    user-scoped event bus for SSE and live notifications
+lib/http-helpers.mjs content-negotiation and JSON/redirect response helpers
 lib/text.mjs        captions with links, "3h" times, "12.5K" counts, filters, username rules
 lib/music.mjs       the music library
 lib/icons.mjs       the interface icons (inline SVG)
